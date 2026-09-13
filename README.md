@@ -151,6 +151,12 @@ heatmap — useful for spotting where two renders of the same thing diverge.
   `0.0000` on every frame). The same blind spot ffmpeg's own adjacent-frame
   scene detector has. A cut or a fast change is still caught reliably; a
   gradual one is not.
+- **Zone/color captions need real signal, tunable via `--min-caption-energy`
+  (default 0.1).** A frame only gets a color/direction caption when its
+  `local_energy` clears this floor; below it, only the plain reason code is
+  shown. The default is a first-pass calibration, not a settled constant —
+  raise it if captions still look like noise on your content, lower it if
+  real local events on smooth/anti-aliased renders go undescribed.
 - **`manifest.json` records the absolute path of your source file and the
   full command line you ran**, for reproducibility. If you share a run
   directory, review `manifest.json`/`report.md` first — they can contain

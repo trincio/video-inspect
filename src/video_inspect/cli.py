@@ -55,6 +55,25 @@ def _validate_inspect_args(args: argparse.Namespace) -> None:
         provenance.fail("--analysis-width and --thumb-width must be at least 16px")
 
 
+def _should_describe(sel: sampler.SelectedFrame, min_caption_energy: float) -> bool:
+    """Whether a selected frame has earned a zone/color caption, as opposed
+    to just its reason code. Kept as its own function so the exact
+    condition is unit-testable: a prior version gated this on
+    local_area_frac > 0, which is mathematically equivalent to requiring
+    local_energy >= 0.5 (area_frac's hard threshold and local_energy's
+    normalization share the same --local-threshold and the same max-cell
+    delta) — far too strict for smooth, anti-aliased content, where a real
+    local event's peak delta can legitimately stay under a full threshold
+    crossing for every single frame of a video.
+    """
+    return (
+        "local_change" in sel.reasons
+        and sel.local_peak_rc is not None
+        and sel.local_grid_shape is not None
+        and sel.local_energy >= min_caption_energy
+    )
+
+
 def cmd_inspect(args: argparse.Namespace) -> int:
     _validate_inspect_args(args)
     source_path = Path(args.source).resolve()
@@ -172,22 +191,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                 position_pct = (sel.index / max(1, total_frames - 1)) * 100
 
             descriptor = None
-            # local_area_frac > 0 means at least one grid cell actually
-            # crossed --local-threshold: a real, if small, signal. The
-            # "local_change" reason tag alone is not enough to gate on —
-            # it is assigned by relative comparison (local_energy >=
-            # global_change_fraction for THIS frame), which can be true
-            # even when both are noise-level on an otherwise-static frame.
-            # Describing a "peak" cell that never crossed any threshold
-            # produces a confident-looking but meaningless caption (e.g. a
-            # named hue color from antialiasing noise at a static edge,
-            # reported as an actual local event).
-            if (
-                "local_change" in sel.reasons
-                and sel.local_peak_rc
-                and sel.local_grid_shape
-                and sel.local_area_frac > 0
-            ):
+            if _should_describe(sel, args.min_caption_energy):
                 frame_bgr = cv2.imread(str(dest_path)) if dest_path.exists() else None
                 descriptor = describe.describe_local_event(
                     sel.local_peak_rc, sel.local_grid_shape, sel.local_area_frac, frame_bgr
@@ -601,6 +605,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_inspect.add_argument("--global-threshold", type=float, default=25.0)
     p_inspect.add_argument("--local-threshold", type=float, default=45.0)
     p_inspect.add_argument("--min-event-spacing", type=float, default=0.35)
+    p_inspect.add_argument(
+        "--min-caption-energy", type=float, default=0.1,
+        help="minimum local_energy (0..1) required before a local-change frame gets a zone/color "
+        "caption, instead of just its reason code; local_energy reaches 1.0 at 2x --local-threshold, "
+        "so this floor is independent of and much lower than a full threshold crossing. Raise it if "
+        "captions still look like noise; lower it if real local events on smooth/anti-aliased content "
+        "(e.g. a Manim render) are going undescribed",
+    )
     p_inspect.add_argument("--max-analysis-frames", type=int, default=None)
     p_inspect.add_argument("--assume-fps", type=float, default=None, help="for frame-directory sources only")
     p_inspect.add_argument("--font", default=None)

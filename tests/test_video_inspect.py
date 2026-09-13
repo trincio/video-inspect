@@ -111,6 +111,51 @@ class SamplerRankingTests(unittest.TestCase):
         self.assertNotIn(1, picked_indices)
 
 
+class ShouldDescribeTests(unittest.TestCase):
+    """A second dogfooding run (a real smooth Manim render) found that the
+    FIRST fix for the false-color-caption bug was
+    itself an overcorrection: gating on local_area_frac > 0 turned out
+    mathematically equivalent to requiring local_energy >= 0.5, which
+    suppressed captions on every single frame of that video — including
+    ones with a genuine, correctly colored local event — because a smooth,
+    anti-aliased render never made any single grid cell cross the full
+    --local-threshold. The fix uses local_energy's continuous value with a
+    low floor (--min-caption-energy, default 0.1) instead."""
+
+    def _frame(self, local_energy: float, local_area_frac: float = 0.0) -> sampler.SelectedFrame:
+        return sampler.SelectedFrame(
+            index=1,
+            timestamp_s=1.0,
+            reasons=["local_change"],
+            global_change_fraction=0.0,
+            local_energy=local_energy,
+            local_peak_rc=(1, 1),
+            local_grid_shape=(4, 4),
+            local_area_frac=local_area_frac,
+        )
+
+    def test_gentle_real_signal_below_hard_threshold_is_still_described(self) -> None:
+        from video_inspect.cli import _should_describe
+
+        # local_energy=0.3 with local_area_frac=0.0: no grid cell fully
+        # crossed --local-threshold, but the peak delta is well above
+        # noise level — exactly the reported regression case.
+        sel = self._frame(local_energy=0.3, local_area_frac=0.0)
+        self.assertTrue(_should_describe(sel, min_caption_energy=0.1))
+
+    def test_near_zero_noise_is_not_described(self) -> None:
+        from video_inspect.cli import _should_describe
+
+        sel = self._frame(local_energy=0.01, local_area_frac=0.0)
+        self.assertFalse(_should_describe(sel, min_caption_energy=0.1))
+
+    def test_floor_is_configurable(self) -> None:
+        from video_inspect.cli import _should_describe
+
+        sel = self._frame(local_energy=0.3, local_area_frac=0.0)
+        self.assertFalse(_should_describe(sel, min_caption_energy=0.5))
+
+
 class GlobalChangeFadeLimitationTests(unittest.TestCase):
     """Documents a real, verified limitation (found via external
     dogfooding, see README "Known limitations"): global_change_fraction
@@ -240,14 +285,13 @@ class VideoInspectSubprocessTests(unittest.TestCase):
 
     def test_zones_require_real_local_signal(self) -> None:
         # Found by an external dogfooding run on real footage: frames with
-        # local_area_frac == 0.0 (no grid cell ever crossed
-        # --local-threshold — i.e. no real local event, just noise/
+        # near-zero local_energy (no real local event, just noise/
         # antialiasing) were still getting a confident color caption
         # ("verde"/"ciano" that matched nothing visible in the frame),
         # because the caption generator was gated on the relative
         # "local_change" reason tag instead of an absolute signal check.
-        # Invariant: a zone must never be reported for a frame with zero
-        # measured local area.
+        # Invariant: a zone must never be reported for a frame whose
+        # local_energy is below the configured floor.
         out = self.root / "run_zones_invariant"
         result = self.invoke(
             "inspect", str(self.video), "--output", str(out), "--budget", "10", "--sampler", "hybrid"
@@ -255,10 +299,10 @@ class VideoInspectSubprocessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         metrics = json.loads((out / "metrics.json").read_text())
         zoned_frame_ids = {z["frame_id"] for z in metrics["measurements"]["zones"]}
-        zero_area_frame_ids = {
-            pf["frame_id"] for pf in metrics["measurements"]["per_frame"] if pf["local_area_frac"] == 0.0
+        below_floor_frame_ids = {
+            pf["frame_id"] for pf in metrics["measurements"]["per_frame"] if pf["local_energy"] < 0.1
         }
-        self.assertEqual(zoned_frame_ids & zero_area_frame_ids, set())
+        self.assertEqual(zoned_frame_ids & below_floor_frame_ids, set())
 
     def test_scene_sampler_does_not_reserve_uniform_coverage(self) -> None:
         out = self.root / "run_scene"
