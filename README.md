@@ -121,11 +121,20 @@ wide one (see [Known limitations](#known-limitations)).
 `compare` does a rough before/after by relative time — before, after, diff
 heatmap — useful for spotting where two renders of the same thing diverge.
 
+<p align="center"><img src="demo/synthetic_grid.png" width="820" alt="grid: N videos side by side at the same relative positions, labeled A/B/C"></p>
+
+`grid` extends the same idea to N videos side by side, purely for
+eyeballing — no diff, since with more than two sources doing genuinely
+different things a pixel diff has no obvious meaning. Each column is
+labeled A/B/C... in a corner badge; useful for comparing several renders of
+different scenes, or several encodes of the same source against each other.
+
 ## Commands
 
 - `inspect <video|frame-dir> --output DIR [--budget N] [--sampler hybrid|uniform|scene] [--caption-style verbal|codes|none]`
 - `zoom <run-dir> --frame F0xx|--at T [--bbox x,y,w,h | --cell C2] [--window S] [--frames N]`
 - `compare before after --output DIR [--positions 0,25,50,75,100]`
+- `grid video1 video2 [video3 ...] --output DIR [--positions 0,25,50,75,100]`
 - `doctor` — environment check (see above)
 
 ## Known limitations
@@ -140,6 +149,9 @@ heatmap — useful for spotting where two renders of the same thing diverge.
 - **`zoom` doesn't track across its burst** — the crop is fixed to the
   initial bounding box. A fast-moving object can leave a wide crop window;
   use a tighter `--window` centered on the moment you care about.
+- `grid` produces one tall image with no pagination — many sources times
+  many positions can get unwieldy; keep `--positions` short for a lot of
+  videos.
 - No live/webcam capture yet — video files and frame directories only.
 - No visual region overlay on the contact sheet yet (the direction/color/
   cell descriptor exists in `metrics.json` and in verbal captions, just not

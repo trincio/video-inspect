@@ -328,6 +328,27 @@ class VideoInspectSubprocessTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("uniform-reserved", result.stdout + result.stderr)
 
+    def test_grid_with_three_sources(self) -> None:
+        second = self.root / "hard_cut_2.mp4"
+        make_hard_cut(second)
+        out = self.root / "run_grid"
+        result = self.invoke(
+            "grid", str(self.video), str(second), str(self.video),
+            "--output", str(out), "--positions", "0,50,100",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((out / "grid.png").exists())
+        manifest = json.loads((out / "manifest.json").read_text())
+        self.assertEqual([s["letter"] for s in manifest["sources"]], ["A", "B", "C"])
+        self.assertEqual(len(manifest["rows"]), 3)
+        self.assertEqual(len(manifest["rows"][0]["cells"]), 3)
+
+    def test_grid_requires_at_least_two_videos(self) -> None:
+        out = self.root / "run_grid_single"
+        result = self.invoke("grid", str(self.video), "--output", str(out))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("at least 2", result.stdout + result.stderr)
+
     def test_per_page_exceeding_grid_fails_with_clear_message(self) -> None:
         out = self.root / "run_bad_perpage"
         result = self.invoke(

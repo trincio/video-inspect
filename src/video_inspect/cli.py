@@ -465,9 +465,38 @@ def cmd_zoom(args: argparse.Namespace) -> int:
     return 0
 
 
+def _grab_frame_at(path: Path, t: float, width: int, out: Path) -> Path:
+    """Single-frame PNG grab at an approximate timestamp. PNG, not JPEG: the
+    mjpeg encoder can reject an exact end-of-stream seek ("Non full-range
+    YUV is non-standard") on some sources, and these are diagnostic stills,
+    not a size-sensitive output.
+    """
+    import subprocess
+
+    cmd = [
+        "ffmpeg", "-y", "-v", "error", "-ss", f"{t:.3f}", "-i", str(path),
+        "-frames:v", "1", "-vf", f"scale='min({width}\\,iw)':-2:flags=area", str(out),
+    ]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode != 0 or not out.exists():
+        print(
+            f"video-inspect: frame grab failed at t={t:.3f}s for {path.name}: "
+            f"{proc.stderr.decode('utf-8', 'replace').strip().splitlines()[-1:]}",
+            file=sys.stderr,
+        )
+    return out
+
+
+def _clamped_time(pct: float, duration_s: float | None) -> float:
+    # Clamp away from the exact duration, which some containers cannot seek
+    # to (no frame is presented exactly at EOF).
+    eps = 0.04
+    dur = duration_s or 0.0
+    return min((pct / 100) * dur, max(0.0, dur - eps))
+
+
 def cmd_compare(args: argparse.Namespace) -> int:
     import cv2
-    import numpy as np
     from PIL import Image, ImageDraw
 
     before = Path(args.before).resolve()
@@ -479,22 +508,6 @@ def cmd_compare(args: argparse.Namespace) -> int:
     info_after = provenance.probe_video(after)
     positions = [float(p) for p in args.positions.split(",")]
 
-    def grab_frame(path: Path, t: float, width: int, out: Path) -> Path:
-        import subprocess
-
-        cmd = [
-            "ffmpeg", "-y", "-v", "error", "-ss", f"{t:.3f}", "-i", str(path),
-            "-frames:v", "1", "-vf", f"scale='min({width}\\,iw)':-2:flags=area", str(out),
-        ]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if proc.returncode != 0 or not out.exists():
-            print(
-                f"video-inspect compare: frame grab failed at t={t:.3f}s for {path.name}: "
-                f"{proc.stderr.decode('utf-8', 'replace').strip().splitlines()[-1:] }",
-                file=sys.stderr,
-            )
-        return out
-
     for w in env_check.optional_warnings(DEFAULT_FONT):
         print(f"video-inspect: {w}", file=sys.stderr)
     font = env_check.load_font(DEFAULT_FONT, 13)
@@ -504,17 +517,10 @@ def cmd_compare(args: argparse.Namespace) -> int:
     tmp_dir.mkdir(exist_ok=True)
 
     for i, pct in enumerate(positions):
-        # PNG, not JPEG: the mjpeg encoder can reject an exact end-of-stream
-        # seek ("Non full-range YUV is non-standard") on some sources. PNG
-        # has no such color-range constraint, and these are diagnostic
-        # stills, not a size-sensitive output.
-        # Also clamp away from the exact duration, which some containers
-        # cannot seek to (no frame is presented exactly at EOF).
-        eps = 0.04
-        tb = min((pct / 100) * (info_before.duration_s or 0), max(0.0, (info_before.duration_s or 0) - eps))
-        ta = min((pct / 100) * (info_after.duration_s or 0), max(0.0, (info_after.duration_s or 0) - eps))
-        fb = grab_frame(before, tb, args.width, tmp_dir / f"before_{i:02d}.png")
-        fa = grab_frame(after, ta, args.width, tmp_dir / f"after_{i:02d}.png")
+        tb = _clamped_time(pct, info_before.duration_s)
+        ta = _clamped_time(pct, info_after.duration_s)
+        fb = _grab_frame_at(before, tb, args.width, tmp_dir / f"before_{i:02d}.png")
+        fa = _grab_frame_at(after, ta, args.width, tmp_dir / f"after_{i:02d}.png")
 
         img_b = cv2.imread(str(fb))
         img_a = cv2.imread(str(fa))
@@ -573,6 +579,131 @@ def cmd_compare(args: argparse.Namespace) -> int:
         print(f"  sheet: {sheet_path}")
     if ranked:
         print(f"  largest difference at: {ranked[0][0]:.0f}% (mean_abs_diff={ranked[0][1]:.1f})")
+    return 0
+
+
+LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+BADGE_SIZE = 26
+BADGE_MARGIN = 6
+BADGE_BG = (20, 20, 20)
+BADGE_FG = (255, 255, 255)
+
+
+def _draw_letter_badge(canvas, draw, letter: str, x0: int, y0: int, font) -> None:
+    """Small filled square with a letter, top-left corner of a thumbnail —
+    distinguishes N sources at a glance without a caption line per cell.
+    """
+    x1, y1 = x0 + BADGE_MARGIN + BADGE_SIZE, y0 + BADGE_MARGIN + BADGE_SIZE
+    draw.rectangle([x0 + BADGE_MARGIN, y0 + BADGE_MARGIN, x1, y1], fill=BADGE_BG)
+    bbox = draw.textbbox((0, 0), letter, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    tx = x0 + BADGE_MARGIN + (BADGE_SIZE - tw) // 2 - bbox[0]
+    ty = y0 + BADGE_MARGIN + (BADGE_SIZE - th) // 2 - bbox[1]
+    draw.text((tx, ty), letter, fill=BADGE_FG, font=font)
+
+
+def cmd_grid(args: argparse.Namespace) -> int:
+    """Same relative-time positions across N videos, side by side, purely
+    for eyeballing — e.g. comparing several Manim renders of different
+    scenes, or several encodes of the same source. No diff computation
+    (see `compare` for a 2-file numeric diff): with N>2 sources doing
+    genuinely different things, a pixel diff has no obvious meaning.
+    """
+    from PIL import Image, ImageDraw
+
+    if len(args.videos) < 2:
+        provenance.fail("grid needs at least 2 video files")
+    if len(args.videos) > len(LETTERS):
+        provenance.fail(f"grid supports at most {len(LETTERS)} video files")
+
+    paths = [Path(v).resolve() for v in args.videos]
+    for p in paths:
+        if not p.exists():
+            provenance.fail(f"source not found: {p}")
+    out_dir = Path(args.output).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = out_dir / "frames"
+    tmp_dir.mkdir(exist_ok=True)
+
+    infos = [provenance.probe_video(p) for p in paths]
+    letters = list(LETTERS[: len(paths)])
+    positions = [float(x) for x in args.positions.split(",")]
+
+    for w in env_check.optional_warnings(DEFAULT_FONT):
+        print(f"video-inspect: {w}", file=sys.stderr)
+    font = env_check.load_font(DEFAULT_FONT, 13)
+    badge_font = env_check.load_font(DEFAULT_FONT, 15)
+    header_font = env_check.load_font(DEFAULT_FONT, 14)
+
+    cell_w = args.width
+    row_images = []
+    manifest_positions = []
+
+    for i, pct in enumerate(positions):
+        thumbs = []
+        cells_meta = []
+        for letter, path, info in zip(letters, paths, infos):
+            t = _clamped_time(pct, info.duration_s)
+            out_f = tmp_dir / f"{letter}_{i:02d}.png"
+            _grab_frame_at(path, t, cell_w, out_f)
+            thumbs.append((letter, out_f, t))
+            cells_meta.append({"letter": letter, "timestamp_s": t})
+
+        opened = [Image.open(f).convert("RGB") for _, f, _ in thumbs]
+        cell_h = max(im.height for im in opened)
+        gap = 8
+        row_w = sum(im.width for im in opened) + gap * (len(opened) - 1)
+        caption_h = 20
+        row_canvas = Image.new("RGB", (row_w, cell_h + caption_h), (255, 255, 255))
+        draw = ImageDraw.Draw(row_canvas)
+        caption = f"{pct:.0f}%   " + "  ".join(f"{l}={t:.2f}s" for l, _, t in thumbs)
+        draw.text((0, 2), caption, fill=(0, 0, 0), font=font)
+
+        x = 0
+        for (letter, _, _), im in zip(thumbs, opened):
+            row_canvas.paste(im, (x, caption_h))
+            _draw_letter_badge(row_canvas, draw, letter, x, caption_h, badge_font)
+            x += im.width + gap
+        row_images.append(row_canvas)
+        manifest_positions.append({"position_pct": pct, "cells": cells_meta})
+
+    header_lines = [
+        "  ".join(f"{l}={p.name}" for l, p in zip(letters, paths)),
+        f"grid  |  {len(paths)} sources  |  {len(positions)} positions",
+    ]
+    header_h = 20 * len(header_lines) + 10
+    max_w = max((r.width for r in row_images), default=cell_w)
+    total_h = header_h + sum(r.height for r in row_images) + 8 * max(0, len(row_images) - 1)
+    grid_img = Image.new("RGB", (max_w, total_h), (245, 245, 245))
+    hdraw = ImageDraw.Draw(grid_img)
+    hy = 6
+    for line in header_lines:
+        hdraw.text((6, hy), line, fill=(0, 0, 0), font=header_font)
+        hy += 20
+    y = header_h
+    for r in row_images:
+        grid_img.paste(r, (0, y))
+        y += r.height + 8
+
+    grid_path = out_dir / "grid.png"
+    grid_img.save(grid_path)
+
+    manifest_mod.write_json(
+        out_dir / "manifest.json",
+        {
+            "schema_version": manifest_mod.SCHEMA_VERSION,
+            "tool": {"name": "video-inspect", "version": provenance.tool_versions()["video_inspect"]},
+            "sources": [
+                {"letter": l, "path": str(p), "name": p.name, "duration_s": info.duration_s}
+                for l, p, info in zip(letters, paths, infos)
+            ],
+            "positions_pct": positions,
+            "rows": manifest_positions,
+            "sheet": grid_path.name,
+        },
+    )
+    print(f"video-inspect grid: {len(paths)} sources x {len(positions)} positions -> {out_dir}")
+    print(f"  sheet: {grid_path}")
     return 0
 
 
@@ -642,6 +773,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_compare.add_argument("--positions", default="0,10,25,50,75,90,100")
     p_compare.add_argument("--width", type=int, default=480)
     p_compare.set_defaults(func=cmd_compare)
+
+    p_grid = sub.add_parser(
+        "grid", help="Same relative-time positions across N videos side by side, for eyeballing only (no diff)."
+    )
+    p_grid.add_argument("videos", nargs="+", help="2 or more video files, in the order they get labeled A, B, C...")
+    p_grid.add_argument("--output", required=True)
+    p_grid.add_argument("--positions", default="0,10,25,50,75,90,100")
+    p_grid.add_argument("--width", type=int, default=360)
+    p_grid.set_defaults(func=cmd_grid)
 
     p_doctor = sub.add_parser(
         "doctor", help="Check required/optional dependencies (ffmpeg, numpy, opencv, Pillow, bundled font)."
