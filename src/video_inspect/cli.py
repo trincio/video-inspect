@@ -609,9 +609,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-caption-energy", type=float, default=0.1,
         help="minimum local_energy (0..1) required before a local-change frame gets a zone/color "
         "caption, instead of just its reason code; local_energy reaches 1.0 at 2x --local-threshold, "
-        "so this floor is independent of and much lower than a full threshold crossing. Raise it if "
-        "captions still look like noise; lower it if real local events on smooth/anti-aliased content "
-        "(e.g. a Manim render) are going undescribed",
+        "so this floor is independent of and much lower than a full threshold crossing. Content-"
+        "dependent: on one clean, low-noise render, measured noise stayed <=0.018 and real signal "
+        ">=0.069 (a clear gap), so 0.02-0.03 lost nothing there and caught more of a fading event's "
+        "tail than the 0.1 default does; on noisy real-world footage (moving grass, continuous camera "
+        "motion) local_energy can sit far higher than that even without a real local event, so the "
+        "default stays conservative until calibrated on more than one content type. Raise it if "
+        "captions still look like noise; lower it on clean/static-background content if real events "
+        "are going undescribed",
     )
     p_inspect.add_argument("--max-analysis-frames", type=int, default=None)
     p_inspect.add_argument("--assume-fps", type=float, default=None, help="for frame-directory sources only")

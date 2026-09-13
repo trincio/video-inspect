@@ -154,9 +154,14 @@ heatmap — useful for spotting where two renders of the same thing diverge.
 - **Zone/color captions need real signal, tunable via `--min-caption-energy`
   (default 0.1).** A frame only gets a color/direction caption when its
   `local_energy` clears this floor; below it, only the plain reason code is
-  shown. The default is a first-pass calibration, not a settled constant —
-  raise it if captions still look like noise on your content, lower it if
-  real local events on smooth/anti-aliased renders go undescribed.
+  shown. Measured on a clean, low-noise render: real signal stayed >=0.069,
+  noise stayed <=0.018 — a clear gap, and a floor around 0.02-0.03 would
+  have used it better (catching a fading event's last frame that 0.1 cuts
+  off). The 0.1 default stays conservative anyway: on noisy real-world
+  footage (moving grass, continuous camera motion — see the point above)
+  `local_energy` sits far higher than that even without a real local event,
+  and a single global default hasn't been calibrated across enough content
+  types yet to lower it safely for everyone.
 - **`manifest.json` records the absolute path of your source file and the
   full command line you ran**, for reproducibility. If you share a run
   directory, review `manifest.json`/`report.md` first — they can contain
