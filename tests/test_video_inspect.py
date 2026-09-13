@@ -111,6 +111,39 @@ class SamplerRankingTests(unittest.TestCase):
         self.assertNotIn(1, picked_indices)
 
 
+class GlobalChangeFadeLimitationTests(unittest.TestCase):
+    """Documents a real, verified limitation (found via external
+    dogfooding, see README "Known limitations"): global_change_fraction
+    compares each frame only to the one immediately before it, so a slow,
+    smooth fade never crosses the per-cell threshold at any single step
+    even though the start and end frames are completely different. This
+    test pins the current (expected, not desired) behavior so a future
+    change to the scoring window is a deliberate decision, not a silent
+    regression discovered by a user again.
+    """
+
+    def test_smooth_fade_never_registers_as_global_change(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        try:
+            root = Path(temp.name)
+            video = root / "fade.mp4"
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-v", "error",
+                    "-f", "lavfi", "-i", "color=c=black:s=320x180:d=1:r=30",
+                    "-f", "lavfi", "-i", "color=c=white:s=320x180:d=1:r=30",
+                    "-filter_complex", "[0:v][1:v]xfade=transition=fade:duration=1:offset=0[v]",
+                    "-map", "[v]", "-pix_fmt", "yuv420p", str(video),
+                ],
+                check=True,
+            )
+            frames = extract.extract_analysis_frames(video, root / "analysis", width=320)
+            scores = sampler.score_frames(frames)
+            self.assertEqual(max(s.global_change_fraction for s in scores), 0.0)
+        finally:
+            temp.cleanup()
+
+
 class ExtractAnalysisFramesTests(unittest.TestCase):
     """A prior version appended -frames:v AFTER the output path in the
     ffmpeg command; ffmpeg binds an output option to the output URL that
@@ -204,6 +237,28 @@ class VideoInspectSubprocessTests(unittest.TestCase):
         result = self.invoke("inspect", str(frames_dir), "--output", str(out), "--budget", "6")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue((out / "timeline.png").exists())
+
+    def test_zones_require_real_local_signal(self) -> None:
+        # Found by an external dogfooding run on real footage: frames with
+        # local_area_frac == 0.0 (no grid cell ever crossed
+        # --local-threshold — i.e. no real local event, just noise/
+        # antialiasing) were still getting a confident color caption
+        # ("verde"/"ciano" that matched nothing visible in the frame),
+        # because the caption generator was gated on the relative
+        # "local_change" reason tag instead of an absolute signal check.
+        # Invariant: a zone must never be reported for a frame with zero
+        # measured local area.
+        out = self.root / "run_zones_invariant"
+        result = self.invoke(
+            "inspect", str(self.video), "--output", str(out), "--budget", "10", "--sampler", "hybrid"
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        metrics = json.loads((out / "metrics.json").read_text())
+        zoned_frame_ids = {z["frame_id"] for z in metrics["measurements"]["zones"]}
+        zero_area_frame_ids = {
+            pf["frame_id"] for pf in metrics["measurements"]["per_frame"] if pf["local_area_frac"] == 0.0
+        }
+        self.assertEqual(zoned_frame_ids & zero_area_frame_ids, set())
 
     def test_scene_sampler_does_not_reserve_uniform_coverage(self) -> None:
         out = self.root / "run_scene"

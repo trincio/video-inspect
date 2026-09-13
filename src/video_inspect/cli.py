@@ -172,7 +172,22 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                 position_pct = (sel.index / max(1, total_frames - 1)) * 100
 
             descriptor = None
-            if "local_change" in sel.reasons and sel.local_peak_rc and sel.local_grid_shape:
+            # local_area_frac > 0 means at least one grid cell actually
+            # crossed --local-threshold: a real, if small, signal. The
+            # "local_change" reason tag alone is not enough to gate on —
+            # it is assigned by relative comparison (local_energy >=
+            # global_change_fraction for THIS frame), which can be true
+            # even when both are noise-level on an otherwise-static frame.
+            # Describing a "peak" cell that never crossed any threshold
+            # produces a confident-looking but meaningless caption (e.g. a
+            # named hue color from antialiasing noise at a static edge,
+            # reported as an actual local event).
+            if (
+                "local_change" in sel.reasons
+                and sel.local_peak_rc
+                and sel.local_grid_shape
+                and sel.local_area_frac > 0
+            ):
                 frame_bgr = cv2.imread(str(dest_path)) if dest_path.exists() else None
                 descriptor = describe.describe_local_event(
                     sel.local_peak_rc, sel.local_grid_shape, sel.local_area_frac, frame_bgr

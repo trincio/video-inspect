@@ -144,6 +144,13 @@ heatmap — useful for spotting where two renders of the same thing diverge.
 - No visual region overlay on the contact sheet yet (the direction/color/
   cell descriptor exists in `metrics.json` and in verbal captions, just not
   drawn as a box on the image).
+- **`global_change_fraction` only compares each frame to the one
+  immediately before it, so a slow, smooth fade or dissolve can stay under
+  the per-cell threshold at every single step even though the cumulative
+  change is total** (verified: a 1-second black-to-white fade scores
+  `0.0000` on every frame). The same blind spot ffmpeg's own adjacent-frame
+  scene detector has. A cut or a fast change is still caught reliably; a
+  gradual one is not.
 - **`manifest.json` records the absolute path of your source file and the
   full command line you ran**, for reproducibility. If you share a run
   directory, review `manifest.json`/`report.md` first — they can contain
