@@ -1,0 +1,26 @@
+# Test/run output (large, reproducible, not meant to be versioned)
+runs/
+/tests/__pycache__/
+
+# Internal working docs (project process notes, not part of the public tool)
+DECISIONS.md
+PROGRESS.md
+sol_evaluations/
+
+# Generated synthetic test videos (reproducible via test_videos/generate_synthetic.py)
+test_videos/synthetic/*.mp4
+test_videos/synthetic/_*.png
+test_videos/synthetic/ground_truth.json
+
+# Downloaded real test video (see test_videos/real/SOURCES.md for how to get it)
+test_videos/real/*.webm
+test_videos/real/*.mp4
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+._*
